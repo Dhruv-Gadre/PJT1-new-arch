@@ -1,0 +1,11 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Data
+# keep raw data local and do not track it by default
+# data/raw/
+
+# Models
+models/*.pkl

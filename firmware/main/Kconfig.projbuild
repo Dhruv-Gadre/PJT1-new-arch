@@ -1,0 +1,15 @@
+menu "Custom ESPectre settings"
+
+config CUSTOM_WIFI_SSID
+    string "Tenda Wi-Fi SSID"
+    default ""
+    help
+        The 2.4 GHz Wi-Fi network name used by the ESP32-S3.
+
+config CUSTOM_WIFI_PASSWORD
+    string "Tenda Wi-Fi password"
+    default ""
+    help
+        The password for the selected Wi-Fi network.
+
+endmenu
