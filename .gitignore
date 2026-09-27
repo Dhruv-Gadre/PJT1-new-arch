@@ -9,3 +9,7 @@ __pycache__/
 
 # Models
 models/*.pkl
+
+
+# Diagnose files
+diagnose_*.py
