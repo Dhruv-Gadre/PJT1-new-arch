@@ -12,8 +12,7 @@ from sklearn.metrics import accuracy_score, classification_report, confusion_mat
 from sklearn.model_selection import StratifiedKFold, cross_val_predict
 from sklearn.preprocessing import StandardScaler
 
-from .features import extract_features
-
+from .features import extract_activity_features
 
 LABELS = ["walking", "running"]
 LABEL_TO_IDX = {"walking": 0, "running": 1}
@@ -39,7 +38,7 @@ def load_dataset(data_dir: Path):
             amplitudes = data["amplitudes"].astype(np.float32)
             phases = data["phases"].astype(np.float32)
 
-            features = extract_features(amplitudes, phases)
+            features = extract_activity_features(amplitudes, phases)
 
             X.append(features)
             y.append(LABEL_TO_IDX[label])
