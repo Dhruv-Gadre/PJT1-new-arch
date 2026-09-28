@@ -13,3 +13,5 @@ models/*.pkl
 
 # Diagnose files
 diagnose_*.py
+
+/data
