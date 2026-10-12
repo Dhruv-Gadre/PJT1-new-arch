@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "custom_espectre"
+version = "0.1.0"
+description = "Custom ESPectre Wi-Fi CSI sensing and motion classification"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "numpy>=1.26",
+    "scipy>=1.13",
+    "scikit-learn>=1.5",
+    "pandas>=2.2",
+    "matplotlib>=3.9",
+    "pyserial>=3.5",
+    "rich>=13.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]

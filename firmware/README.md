@@ -1,38 +1,93 @@
-# Firmware notes
+# Firmware Overview
 
-The active firmware is the Arduino sketch at `custom_espectre_csi/custom_espectre_csi.ino`.
+This directory contains the firmware for the ESP32-S3 Wi-Fi CSI sensing pipeline.
 
-The older ESP-IDF files in this directory are retained as reference only. Do not open or build them for the current workflow.
+There are two Arduino sketches depending on your workflow:
 
-The first goal is to stream CSI windows to the host over serial, so that the motion/idle model can be trained and validated on real data.
+| Sketch | Path | Purpose |
+| :--- | :--- | :--- |
+| **Collector** | `custom_espectre_csi/custom_espectre_csi.ino` | Streams raw CSI JSON to host over USB serial for data collection and model training |
+| **On-Device Inference** | `esp_inference/esp_inference.ino` | Runs Stage A (Math) + Stage B (Logistic Regression) natively on the ESP32-S3 |
 
-## Recommended first firmware goal
+> **Note:** The older ESP-IDF files in `main/` are retained for historical reference only. Use the Arduino sketches below for all current workflows.
 
-- connect to the Tenda router over Wi-Fi in station mode
-- read CSI packets from the ESP32 radio
-- log amplitude and phase values for each packet
-- print them as JSON to the USB serial port
-- keep the code small and easy to debug
+---
 
-## Later extension
+## 1. Raw CSI Collector (`custom_espectre_csi/`)
 
-Once the motion/idle path is validated, the same firmware can be expanded to:
+Streams CSI packets as JSON lines to the host serial port. The host Python pipeline collects these into 100-packet `.npz` windows for calibration and training.
 
-- trigger a motion window buffer
-- run a small embedded inferencer
-- perform running/walking/sitting classification on the device
+### Upload & Run
+1. Open `custom_espectre_csi/custom_espectre_csi.ino` in Arduino IDE.
+2. Edit `WIFI_SSID` and `WIFI_PASSWORD` for your 2.4 GHz network (e.g., Tenda router).
+3. Select board **ESP32S3 Dev Module** (or your specific board variant) and port.
+4. Upload at `921600` baud.
+5. In Python, start the collector:
+   ```bash
+   python -m custom_espectre.collect --port COM3 --label idle --count 20
+   ```
 
-The current codebase intentionally keeps the firmware layer separate from the training and feature pipeline, so the architecture can evolve without a rewrite.
+---
 
-## Configure and upload
+## 2. On-Device Native Inference (`esp_inference/`)
 
-1. Install Arduino IDE and the `esp32` board package by Espressif Systems.
-2. Open `custom_espectre_csi/custom_espectre_csi.ino`.
-3. Edit the SSID and password constants at the top of the sketch.
-4. Select your ESP32-S3 board and its COM port.
-5. Upload at `921600` baud.
-6. Open Serial Monitor at `921600` baud.
+Runs both classification stages **completely on the ESP32-S3 hardware** without needing a Python process running on a host computer.
 
-The sketch prints its local IP address and then emits one JSON CSI packet per line. The Python collector consumes those JSON lines and saves 100 packets per `.npz` window.
+```
+Wi-Fi CSI packets (100-packet window)
+  │
+  ▼
+Stage A: Mathematics (ESPectre MVS + NBVI)
+  │
+  ├──► Score below threshold ─────────────► JSON: {"stage_a": "idle", ...}
+  │
+  └──► Score above threshold (MOTION)
+         │
+         ▼
+       Stage B: Logistic Classifier (Compiled C array)
+         │
+         ├──► walking ──────────────────► JSON: {"stage_a": "motion", "stage_b": "walking", ...}
+         └──► running ──────────────────► JSON: {"stage_a": "motion", "stage_b": "running", ...}
+```
 
-If packet output is sparse, generate local UDP traffic directly to the ESP32 IP from a laptop on the same Tenda network. Internet access is not required. The ESP32 must be connected to the same 2.4 GHz network as the laptop, and client/AP isolation must be disabled if the devices cannot reach each other.
+### Stage A: Mathematics (No ML Model Needed)
+- **Moving Variance Score (MVS)**: Sliding-window variance over the mean amplitude envelope.
+- **Narrowband Variance Indicator (NBVI)**: Per-subcarrier temporal variance normalized against the quiet-room baseline.
+- **Automatic Boot Calibration**: The first 10 windows (`CALIBRATION_WINDOWS`) collected at power-on are treated as idle baseline to adapt to the physical room. Keep the room quiet for ~15 seconds after booting.
+
+### Stage B: Logistic Regression (Optional On-Device Activity Classifier)
+Stage B runs the 13 feature extraction metrics on-device and applies the trained weights + StandardScaler directly as C arrays.
+
+#### How to export Stage B weights to the firmware:
+1. Train Stage B on your collected walking/running data:
+   ```bash
+   $env:PYTHONPATH="src"
+   python -m custom_espectre.train_activity --data-dir data/windows --out models/model_b.pkl
+   ```
+2. Export weights to C header:
+   ```bash
+   python -m custom_espectre.export_model_b --model models/model_b.pkl --out firmware/esp_inference/model_b_weights.h
+   ```
+3. In `esp_inference/esp_inference.ino`, enable Stage B:
+   ```cpp
+   #define ENABLE_STAGE_B 1
+   ```
+4. Flash the sketch to the ESP32-S3 at `921600` baud.
+
+### Serial Monitor Output
+Open Serial Monitor at `921600` baud to observe live JSON classification output:
+```json
+{"window": 1, "stage_a": "idle", "mvs": 0.000041, "nbvi": 1.02}
+{"window": 2, "stage_a": "motion", "stage_b": "walking", "mvs": 0.012450, "nbvi": 5.41}
+{"window": 3, "stage_a": "motion", "stage_b": "running", "mvs": 0.048910, "nbvi": 14.82}
+```
+
+---
+
+## Wi-Fi Traffic Generation
+CSI packets are only captured when Wi-Fi frames are transmitted. If output is sparse:
+- Run the PowerShell UDP sender script from a laptop on the same Wi-Fi network:
+  ```powershell
+  .\udp.ps1 -TargetIp 192.168.0.xxx -Rate 60
+  ```
+- Ensure client/AP isolation is disabled on the router.

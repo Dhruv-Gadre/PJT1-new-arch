@@ -10,6 +10,11 @@ __pycache__/
 # Models
 models/*.pkl
 
+# Generated model weights header (re-create with export_model_b.py)
+firmware/esp_inference/model_b_weights.h
+
+# Math calibration baseline
+models/math_baseline.json
 
 # Diagnose files
 diagnose_*.py

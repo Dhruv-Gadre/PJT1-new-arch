@@ -216,3 +216,163 @@ Only after these checks pass should the label set be expanded for Step 2.
 5. Extend to running/walking/sitting with the same architecture
 
 This is the right order for a result that actually works.
+
+---
+
+## Task A — Model A: from ML to Mathematics
+
+Stage A (IDLE / MOTION) now has a second, training-free backend that uses the same
+signal-processing approach as the [ESPectre project](https://github.com/francescopace/espectre).
+
+### How it works
+
+Two metrics are combined:
+
+| Metric | What it measures |
+|---|---|
+| **MVS** (Moving Variance Score) | Mean variance of sliding sub-windows of the amplitude envelope. Spikes when a person moves. |
+| **NBVI** (Narrowband Variance Indicator) | Per-subcarrier temporal variance normalised to a quiet-room baseline. Rises when the channel changes relative to the idle state. |
+
+A window is classified as **MOTION** when MVS > threshold OR (calibrated NBVI > threshold).
+
+### New files added
+
+```text
+src/custom_espectre/
+├── math_detector.py      # Core MVS / NBVI logic + MathDetector class
+├── calibrate_math.py     # CLI: fit idle baseline → models/math_baseline.json
+└── predict_math.py       # CLI: live prediction (+ optional ML comparison)
+```
+
+### Step-by-step
+
+#### 1. Calibrate from existing idle windows
+
+```powershell
+$env:PYTHONPATH = (Resolve-Path .\src).Path
+python -m custom_espectre.calibrate_math `
+    --data-dir data/raw/idle `
+    --out models/math_baseline.json
+```
+
+This reads the collected idle `.npz` files, computes a quiet-room baseline,
+auto-tunes the MVS threshold to 3× the idle level, and saves a tiny JSON.
+
+#### 2. Run live math detection
+
+```powershell
+python -m custom_espectre.predict_math `
+    --baseline models/math_baseline.json `
+    --count 20 --port COM8
+```
+
+#### 3. Side-by-side with the ML model (comparison mode)
+
+```powershell
+python -m custom_espectre.predict_math `
+    --baseline models/math_baseline.json `
+    --ml-model models/motion_idle_model.pkl `
+    --count 20 --port COM8
+```
+
+The output shows the math label, MVS, NBVI, and the ML label in one table.
+
+---
+
+## Task B — On-device inference (ESP32 native)
+
+The new sketch `firmware/esp_inference/esp_inference.ino` runs **both models directly
+on the ESP32-S3** — no host Python required after flashing.
+
+### Architecture on-device
+
+```
+CSI packets
+    │
+    ▼  (100 packets = 1 window)
+┌──────────────────────┐
+│  Stage A — Math      │  MVS + NBVI computed in C
+│  MVS + NBVI          │  Calibrated during first 10 idle windows at boot
+└──────────┬───────────┘
+           │ MOTION
+           ▼
+┌──────────────────────┐
+│  Stage B — LR        │  13-feature vector → logistic regression
+│  walking / running   │  Weights compiled in from model_b_weights.h
+└──────────────────────┘
+           │
+           ▼  JSON over USB serial (921600 baud)
+```
+
+### Step-by-step
+
+#### 1. (Optional) Export Stage-B weights
+
+Only needed if you have trained `models/activity_model.pkl`:
+
+```powershell
+python -m custom_espectre.export_model_b `
+    --model models/activity_model.pkl `
+    --out firmware/esp_inference/model_b_weights.h
+```
+
+If you skip this, open `esp_inference.ino` and set `#define ENABLE_STAGE_B 0`.
+
+#### 2. Open the new sketch
+
+Open `firmware/esp_inference/esp_inference.ino` in Arduino IDE.
+
+Edit the Wi-Fi credentials at the top:
+
+```cpp
+const char *WIFI_SSID     = "YOUR_SSID";
+const char *WIFI_PASSWORD = "YOUR_PASSWORD";
+```
+
+Set `ENABLE_STAGE_B 1` if you exported weights, or leave it `0`.
+
+#### 3. Upload
+
+Select your ESP32-S3 board and port, then click **Upload**.
+
+#### 4. Calibration at boot
+
+Open Serial Monitor at **921600 baud**.  Keep the room **empty** for the first
+~15 seconds.  The firmware will print:
+
+```json
+{"event":"calibrating","window":1,"remaining":9}
+...
+{"event":"calibrated","mvs_threshold":0.000312,"idle_mvs":0.000104}
+```
+
+#### 5. Live output
+
+After calibration, one JSON line per window:
+
+```json
+{"window":11,"stage_a":"idle","mvs":0.000041,"nbvi":1.23}
+{"window":12,"stage_a":"motion","mvs":0.012341,"nbvi":8.76}
+{"window":13,"stage_a":"motion","stage_b":"walking","mvs":0.009,"nbvi":7.1}
+```
+
+(Stage-B line only appears when `ENABLE_STAGE_B 1`.)
+
+### New files added
+
+```text
+firmware/
+└── esp_inference/
+    ├── esp_inference.ino       # New on-device inference sketch
+    └── model_b_weights.h       # Generated — not committed (run export_model_b.py)
+
+src/custom_espectre/
+└── export_model_b.py           # Converts activity_model.pkl → C header
+```
+
+### When to use which sketch
+
+| Sketch | Purpose |
+|---|---|
+| `firmware/custom_espectre_csi/custom_espectre_csi.ino` | Stream raw CSI JSON to host — use this for training |
+| `firmware/esp_inference/esp_inference.ino` | On-device detection — no host Python needed |
